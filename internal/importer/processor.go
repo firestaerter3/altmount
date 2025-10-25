@@ -923,7 +923,9 @@ func (proc *Processor) process7zArchiveWithDir(parsed *ParsedNzb, virtualDir str
 			}
 
 			// Flatten the internal path by extracting only the base filename
-			baseFilename := filepath.Base(sevenZipContent.InternalPath)
+			// Normalize backslashes first (Windows-style paths in 7zip archives)
+			normalizedInternalPath := strings.ReplaceAll(sevenZipContent.InternalPath, "\\", "/")
+			baseFilename := filepath.Base(normalizedInternalPath)
 
 			// Generate a unique filename to handle duplicates
 			uniqueFilename := proc.getUniqueFilename(sevenZipDirPath, baseFilename, currentBatchFiles)
