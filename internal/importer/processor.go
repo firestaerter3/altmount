@@ -379,6 +379,26 @@ func (proc *Processor) processRarArchiveWithDir(parsed *ParsedNzb, virtualDir st
 			// Normalize backslashes first (Windows-style paths in RAR archives)
 			normalizedInternalPath := strings.ReplaceAll(rarContent.InternalPath, "\\", "/")
 			baseFilename := filepath.Base(normalizedInternalPath)
+			
+			// Try to get the correct filename from PAR2 files if the RAR internal name looks truncated
+			// This handles cases where rarlist returns incorrect filenames from RAR headers
+			if len(par2Files) > 0 && proc.deobfuscator != nil {
+				correctedName := proc.deobfuscator.DeobfuscateFilename(baseFilename, parsed.AllFiles)
+				if correctedName != baseFilename {
+					// Only use PAR2 correction if it looks like a prefix was added (not case change)
+					// Check if corrected name ends with the same suffix as the RAR internal name
+					baseNoExt := strings.TrimSuffix(baseFilename, filepath.Ext(baseFilename))
+					correctedNoExt := strings.TrimSuffix(correctedName, filepath.Ext(correctedName))
+					
+					// If corrected name ends with RAR name (ignoring case), it's likely adding a missing prefix
+					if strings.HasSuffix(strings.ToLower(correctedNoExt), strings.ToLower(baseNoExt)) {
+						proc.log.Info("Corrected truncated RAR internal filename using PAR2 data",
+							"rar_internal", baseFilename,
+							"par2_corrected", correctedName)
+						baseFilename = correctedName
+					}
+				}
+			}
 
 			// Generate a unique filename to handle duplicates
 			uniqueFilename := proc.getUniqueFilename(rarDirPath, baseFilename, currentBatchFiles)

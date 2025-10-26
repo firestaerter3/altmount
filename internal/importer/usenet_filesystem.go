@@ -128,6 +128,7 @@ func (uf *UsenetFile) Stat() (fs.FileInfo, error) {
 	}, nil
 }
 
+// Read implements fs.File interface
 func (uf *UsenetFile) Read(p []byte) (n int, err error) {
 	if uf.closed {
 		return 0, fs.ErrClosed
@@ -135,6 +136,13 @@ func (uf *UsenetFile) Read(p []byte) (n int, err error) {
 
 	// Create reader if not exists
 	if uf.reader == nil {
+		// Log the read operation to debug RAR parsing issues
+		slog.Default().Debug("UsenetFile Read starting", 
+			"file", uf.name, 
+			"position", uf.position, 
+			"size", uf.size,
+			"buffer_size", len(p))
+		
 		reader, err := uf.createUsenetReader(uf.ctx, uf.position, uf.size-1)
 		if err != nil {
 			return 0, fmt.Errorf("failed to create usenet reader: %w", err)
@@ -145,6 +153,19 @@ func (uf *UsenetFile) Read(p []byte) (n int, err error) {
 
 	n, err = uf.reader.Read(p)
 	uf.position += int64(n)
+	
+	// Log what we read (first few bytes for header inspection)
+	if uf.position <= 512 && n > 0 {
+		preview := n
+		if preview > 64 {
+			preview = 64
+		}
+		slog.Default().Debug("UsenetFile Read data", 
+			"file", uf.name,
+			"bytes_read", n,
+			"position", uf.position,
+			"first_bytes", fmt.Sprintf("%x", p[:preview]))
+	}
 
 	return n, err
 }
