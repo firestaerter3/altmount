@@ -77,7 +77,9 @@ func (rh *rarProcessor) AnalyzeRarContentFromNzb(ctx context.Context, rarFiles [
 	}
 
 	// Rename RAR files to match the first file's base name that will allow parse rar that have different files name
+	rh.log.Debug("RAR files before rename", "first_file", rarFiles[0].Filename)
 	sortFiles := renameRarFilesAndSort(rarFiles)
+	rh.log.Debug("RAR files after rename", "first_file", sortFiles[0].Filename)
 
 	// Create Usenet filesystem for RAR access - this enables rarlist to access
 	// RAR part files directly from Usenet without downloading
@@ -504,6 +506,7 @@ func renameRarFilesAndSort(rarFiles []ParsedFile) []ParsedFile {
 	// Get the base name of the first RAR file (without extension)
 	// We need to use the original suffix (with leading zeros) to properly extract the base name
 	firstFileBase := extractBaseFilename(rarFiles[0].Filename)
+	slog.Default().Debug("Extracted RAR base filename", "original", rarFiles[0].Filename, "base", firstFileBase, "base_length", len(firstFileBase))
 
 	// Rename all RAR files to match the base name of the first file while preserving original part naming
 	for i := range rarFiles {
