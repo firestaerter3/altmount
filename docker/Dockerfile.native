@@ -1,0 +1,109 @@
+# Non-s6 AltMount image for native FUSE.
+#
+# The stock image (docker/Dockerfile) is built on the LinuxServer s6-overlay
+# base, which cannot run `userns_mode: host` on a userns-remap docker daemon.
+# That is the only reason the deployment needs a separate rclone sidecar to
+# expose the mount in the host namespace.
+#
+# This image drops s6 entirely: a minimal debian final stage with a plain
+# entrypoint, so altmount itself can run `userns_mode: host` + do native rclone
+# FUSE (`mount_type: rclone`), eliminating the sidecar.
+#
+# Self-contained: builds the frontend and the static Go binary in-image, so the
+# build workflow is a single job (no pre-built frontend artifact required).
+# syntax=docker/dockerfile:1.11
+
+# Frontend build stage
+FROM oven/bun:1 AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/bun.lock frontend/package.json ./
+RUN --mount=type=cache,target=/root/.bun/install/cache,sharing=locked \
+    --mount=type=cache,target=/tmp/bun-cache,sharing=locked \
+    bun install --frozen-lockfile
+COPY frontend/ ./
+RUN --mount=type=cache,target=/tmp/bun-build-cache,sharing=locked \
+    bun run build
+
+# Backend build stage — fully static binary (musl), runs on glibc too
+FROM golang:1.26-alpine AS backend-builder
+RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
+    apk add --no-cache git gcc g++ musl-dev sqlite-dev
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod,sharing=locked \
+    --mount=type=cache,target=/root/.cache/go-mod-download,sharing=locked \
+    go mod download
+COPY ./pkg ./pkg
+COPY ./internal ./internal
+COPY ./cmd ./cmd
+COPY ./frontend/embed_cli.go ./frontend/embed_cli.go
+COPY ./frontend/embed_docker.go ./frontend/embed_docker.go
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+ARG VERSION=dev
+ARG COMMIT=unknown
+ARG BUILD_TIMESTAMP=unknown
+RUN --mount=type=cache,target=/root/.cache/go-build,sharing=locked \
+    --mount=type=cache,target=/tmp/go-build-cache,sharing=locked \
+    CGO_ENABLED=1 GOOS=linux \
+    go build -a \
+    -ldflags "-linkmode external -extldflags \"-static\" -X 'github.com/javi11/altmount/internal/version.Version=${VERSION}' -X 'github.com/javi11/altmount/internal/version.GitCommit=${COMMIT}' -X 'github.com/javi11/altmount/internal/version.Timestamp=${BUILD_TIMESTAMP}'" \
+    -o altmount cmd/altmount/main.go
+
+# Final stage — minimal debian, NO s6-overlay
+FROM debian:bookworm-slim
+ARG DEBIAN_FRONTEND="noninteractive"
+ARG PUID=1000
+ARG PGID=1000
+ENV PUID=${PUID}
+ENV PGID=${PGID}
+ENV PORT=8080
+ENV HOST=0.0.0.0
+WORKDIR /app
+
+# Runtime deps: fuse3 + rclone for native mount, gosu to drop privileges,
+# media-types for correct content-types, passwd for the runtime user account.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+        fuse3 \
+        ca-certificates \
+        wget \
+        gosu \
+        passwd \
+        media-types \
+        curl \
+        unzip && \
+    echo "user_allow_other" >> /etc/fuse.conf && \
+    case "$(uname -m)" in \
+        x86_64) ARCH=amd64 ;; \
+        aarch64) ARCH=arm64 ;; \
+        armv7l) ARCH=arm ;; \
+        *) echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
+    esac && \
+    curl -O "https://downloads.rclone.org/rclone-current-linux-${ARCH}.zip" && \
+    unzip "rclone-current-linux-${ARCH}.zip" && \
+    cp rclone-*/rclone /usr/local/bin/ && \
+    chmod +x /usr/local/bin/rclone && \
+    rm -rf rclone-* && \
+    apt-get purge -y curl unzip && \
+    apt-get autoremove -y && \
+    rm -rf /var/lib/apt/lists/*
+
+# Runtime user (uid/gid realigned to PUID/PGID at start by the entrypoint).
+RUN groupadd -g "${PGID}" abc && \
+    useradd -u "${PUID}" -g abc -d /config -s /usr/sbin/nologin abc
+
+COPY --from=backend-builder /app/altmount /app/altmount
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+COPY docker/entrypoint-native.sh /entrypoint.sh
+RUN chmod +x /app/altmount /entrypoint.sh
+
+EXPOSE 8080
+VOLUME ["/config", "/metadata"]
+
+HEALTHCHECK --interval=5s --timeout=10s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/live || exit 1
+
+LABEL org.opencontainers.image.source="https://github.com/javi11/altmount"
+LABEL org.opencontainers.image.description="AltMount (non-s6, native FUSE / userns_mode host)"
+
+ENTRYPOINT ["/entrypoint.sh"]

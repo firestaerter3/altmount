@@ -1,0 +1,72 @@
+name: Build Native (non-s6) Image
+
+# Builds the non-s6 / native-FUSE image (docker/Dockerfile.native) for amd64.
+# Single arch on purpose: the only consumer is the amd64 LXC docker host.
+#
+# NOTE: workflow_dispatch only registers when this file is on the default
+# branch, so it is also committed to main. The `branch` input selects the code
+# (and Dockerfile.native) to actually build.
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build from'
+        required: true
+        default: 'feat/native-fuse-nons6'
+        type: string
+      tag:
+        description: 'Image tag to push'
+        required: false
+        default: 'native-660'
+        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-native-amd64:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout ${{ inputs.branch }}
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.branch }}
+          fetch-depth: 0
+
+      - name: Normalize image name
+        run: echo "IMAGE_NAME_LC=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Docker login
+        uses: docker/login-action@v4
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push native amd64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: ./docker/Dockerfile.native
+          platforms: linux/amd64
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ inputs.tag }}
+          build-args: |
+            VERSION=${{ inputs.tag }}
+            COMMIT=${{ github.sha }}
+          cache-from: type=gha,scope=native-amd64
+          cache-to: type=gha,mode=max,scope=native-amd64
+          provenance: false
+          sbom: false
+
+      - name: Image built successfully
+        run: |
+          echo "Pushed ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ inputs.tag }}"
