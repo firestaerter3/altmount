@@ -399,6 +399,13 @@ func (m *Manager) createConfig(configName, webdavURL string, user, pass string) 
 				"user":            user,
 				"pass":            pass,
 			},
+			// Obscure the plaintext webdav password before rclone stores it.
+			// Without this rclone keeps it as-is, then fails to reveal it and
+			// sends a garbled password to the local webdav → 401 when
+			// auth.login_required is true (the whole native-mount blocker).
+			"opt": map[string]any{
+				"obscure": true,
+			},
 		},
 	}
 
