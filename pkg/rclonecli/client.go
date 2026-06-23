@@ -122,13 +122,33 @@ func (m *Manager) performMount(ctx context.Context, provider, mountPath, webdavU
 		// Only add _config if there are options to set
 		mountArgs["_config"] = configOpts
 	}
+	// rclone RC mount/mount expects CacheMode as an integer (0=off,1=minimal,2=writes,3=full).
+	// Passing the string "full" is silently ignored, leaving the mount at mode 0 (off).
+	cacheModeInt := 0
+	switch cfg.RClone.VFSCacheMode {
+	case "minimal":
+		cacheModeInt = 1
+	case "writes":
+		cacheModeInt = 2
+	case "full":
+		cacheModeInt = 3
+	}
 	vfsOpt := map[string]any{
-		"CacheMode": cfg.RClone.VFSCacheMode,
+		"CacheMode": cacheModeInt,
 	}
 	vfsOpt["PollInterval"] = 0 // Poll interval not supported for webdav, set to 0
 
-	// Add VFS options if caching is enabled
-	if cfg.RClone.VFSCacheMode != "off" {
+	// DirCacheTime controls how long directory listings are cached in the VFS.
+	// Apply it regardless of VFS cache mode — it reduces WebDAV PROPFIND load
+	// during library sync even when file-content caching is disabled.
+	if cfg.RClone.DirCacheTime != "" {
+		if dirCacheDuration, e := time.ParseDuration(cfg.RClone.DirCacheTime); e == nil {
+			vfsOpt["DirCacheTime"] = dirCacheDuration.Nanoseconds()
+		}
+	}
+
+	// Add VFS options if file-content caching is enabled
+	if cacheModeInt > 0 {
 		if cfg.RClone.VFSCacheMaxAge != "" {
 			if attrTimeout, e := time.ParseDuration(cfg.RClone.VFSCacheMaxAge); e == nil {
 				vfsOpt["CacheMaxAge"] = attrTimeout.Nanoseconds()
@@ -139,6 +159,9 @@ func (m *Manager) performMount(ctx context.Context, provider, mountPath, webdavU
 			// Ensure the reported total disk space matches the configured cache size
 			// so media servers see accurate available space
 			vfsOpt["DiskSpaceTotalSize"] = cfg.RClone.VFSCacheMaxSize
+		}
+		if cfg.RClone.VFSCacheMinFreeSpace != "" {
+			vfsOpt["CacheMinFreeSpace"] = cfg.RClone.VFSCacheMinFreeSpace
 		}
 		if cfg.RClone.VFSCachePollInterval != "" {
 			vfsOpt["CachePollInterval"] = cfg.RClone.VFSCachePollInterval
